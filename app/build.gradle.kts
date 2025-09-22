@@ -1,3 +1,5 @@
+import org.gradle.internal.declarativedsl.dom.mutation.mutationArguments
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.kotlinAndroid)
@@ -16,7 +18,22 @@ android {
         versionName = "1.0"
 
         ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            abiFilters += listOf("arm64-v8a", "x86", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DLLAMA_CURL=OFF",
+                    "-DGGML_CCACHE=OFF",
+                    "-DANDROID_STL=c++_shared",
+                    "-DLLAMA_BUILD_TESTS=OFF",
+                    "-DLLAMA_BUILD_EXAMPLES=OFF",
+                    "-DLLAMA_BUILD_SERVER=OFF",
+                    "-DGGML_OPENMP=ON",
+                )
+                cppFlags += listOf("-std=c++17")
+            }
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
