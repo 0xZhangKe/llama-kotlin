@@ -39,10 +39,10 @@ static bool ends_with(const std::string& s, const std::string& suf) {
 }
 // 单 token -> 文本
 static std::string token_to_piece(llama_model* model, llama_token tok) {
-    int need = llama_token_to_piece(model, tok, nullptr, 0, true);
+    int need = llama_detokenize(model, &tok, 1, nullptr, 0, true);
     if (need <= 0) return "";
     std::string out; out.resize(need);
-    int wrote = llama_token_to_piece(model, tok, out.data(), need, true);
+    int wrote = llama_token_to_piece(model, tok, out.data(), (int)out.size(), /*special=*/true);
     if (wrote < 0) return "";
     if (wrote < need) out.resize(wrote);
     return out;

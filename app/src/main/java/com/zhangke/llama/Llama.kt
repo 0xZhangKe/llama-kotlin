@@ -2,10 +2,6 @@ package com.zhangke.llama
 
 import androidx.annotation.Keep
 
-package com.zhangke.llama
-
-import androidx.annotation.Keep
-
 object Llama {
 
     init {
