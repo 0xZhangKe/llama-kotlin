@@ -17,7 +17,7 @@ object Llama {
         val useMLock: Boolean = false
     )
 
-    data class GenOptions(
+    class GenOptions(
         val maxTokens: Int = 256,
         val temperature: Float = 0.8f,
         val topP: Float = 0.95f,
@@ -28,9 +28,9 @@ object Llama {
         val stop: Array<String> = emptyArray()
     )
 
-    interface TokenCallback {
-        fun onToken(text: String, tokenId: Int) {}
-        fun shouldStop(): Boolean = false
+    interface GenerateCallback {
+        fun onDelta(text: String)
+        fun onDone()
     }
 
     // ---- Kotlin API ----
@@ -46,12 +46,10 @@ object Llama {
     fun reset() = nativeReset()
 
     fun vocabSize(): Int = nativeVocabSize()
-    fun tokenize(text: String, addBos: Boolean = true): IntArray =
-        nativeTokenize(text, addBos)
-    fun detokenize(tokens: IntArray): String =
-        nativeDetokenize(tokens)
-    fun embeddings(text: String): FloatArray =
-        nativeEmbeddings(text)
+
+    fun tokenize(text: String, addBos: Boolean = true): IntArray = nativeTokenize(text, addBos)
+
+    fun detokenize(tokens: IntArray): String = nativeDetokenize(tokens)
 
     fun generate(prompt: String, options: GenOptions = GenOptions()): String =
         nativeGenerate(
@@ -64,7 +62,7 @@ object Llama {
     fun generateStreaming(
         prompt: String,
         options: GenOptions = GenOptions(),
-        callback: TokenCallback
+        callback: GenerateCallback
     ) {
         nativeGenerateStreaming(
             prompt,
@@ -76,10 +74,17 @@ object Llama {
     }
 
     // ---- JNI ----
+    /**
+     * @param nCtx 上下文长度（context size）控制模型一次能记住多少 token；常用值 2048~8192。
+     * @param nGpuLayers GPU 层数（仅在支持 GPU 的 llama 变体中有效）决定把前多少层模型加载到 GPU 上。手机上通常填 0（全部 CPU）。
+     * @param nThreads 推理时使用的 CPU 线程数 llama_eval 会用它控制并行度。填 4 就代表使用 4 个线程。
+     * @param useMMap 是否使用内存映射（memory-mapped file）加载模型 true 可以显著减少启动时内存占用（因为不需要完整读入文件），但文件必须位于支持 mmap 的文件系统上。
+     * @param useMLock 是否锁定模型到物理内存（防止被换出）一般在服务器或桌面上启用。手机上建议关掉。
+     */
     @Keep @JvmStatic external fun nativeLoadModel(
         modelPath: String,
         nCtx: Int, nGpuLayers: Int, nThreads: Int,
-        seed: Int, useMMap: Boolean, useMLock: Boolean
+        useMMap: Boolean, useMLock: Boolean
     )
 
     @Keep @JvmStatic external fun nativeFreeModel()
@@ -88,7 +93,6 @@ object Llama {
     @Keep @JvmStatic external fun nativeVocabSize(): Int
     @Keep @JvmStatic external fun nativeTokenize(text: String, addBos: Boolean): IntArray
     @Keep @JvmStatic external fun nativeDetokenize(tokens: IntArray): String
-    @Keep @JvmStatic external fun nativeEmbeddings(text: String): FloatArray
 
     @Keep @JvmStatic external fun nativeGenerate(
         prompt: String,
@@ -102,6 +106,6 @@ object Llama {
         maxTokens: Int, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, frequencyPenalty: Float, presencePenalty: Float,
         stop: Array<String>,
-        callback: TokenCallback
+        callback: GenerateCallback
     )
 }
