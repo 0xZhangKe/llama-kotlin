@@ -22,8 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.zhangke.llama.Llama
+import com.zhangke.llama.Llama.GenerateCallback
 import com.zhangke.llama.app.ui.theme.LlamakotlinTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -37,9 +41,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             LlamakotlinTheme {
                 var loadResult by rememberSaveable { mutableStateOf("") }
+                var chatLog by rememberSaveable { mutableStateOf("") }
                 MainPage(
                     modelFile = modelFile,
                     loadResult = loadResult,
+                    chatLog = chatLog,
                     onLoadModel = {
                         runCatching {
                             Llama.load(modelFile.absolutePath)
@@ -47,9 +53,43 @@ class MainActivity : ComponentActivity() {
                             loadResult = "load success"
                         }.onFailure {
                             loadResult = "load failed"
-
                         }
-                    }
+                    },
+                    onSendPrompt = { prompt ->
+                        chatLog = "start generate...\n"
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                val start = System.currentTimeMillis()
+                                Llama.generateStreaming(
+                                    prompt = prompt,
+                                    callback = object : GenerateCallback {
+
+                                        override fun onDelta(text: String) {
+                                            chatLog += text
+                                        }
+
+                                        override fun onDone() {
+                                            chatLog += "\n===done===\n"
+                                            chatLog += "Time taken: ${(System.currentTimeMillis() - start) / 1000} seconds\n"
+                                        }
+                                    },
+                                )
+                            }.onSuccess {
+                                chatLog += "generate finished."
+                            }.onFailure {
+                                chatLog += "generate failed: ${it.message}."
+                            }
+                        }
+                    },
+                    onReleaseModel = {
+                        runCatching {
+                            Llama.unload()
+                        }.onSuccess {
+                            loadResult = "release success"
+                        }.onFailure {
+                            loadResult = "release failed"
+                        }
+                    },
                 )
             }
         }
@@ -61,7 +101,10 @@ class MainActivity : ComponentActivity() {
 private fun MainPage(
     modelFile: File,
     loadResult: String,
+    chatLog: String,
     onLoadModel: () -> Unit,
+    onSendPrompt: (String) -> Unit,
+    onReleaseModel: () -> Unit,
 ) {
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Box(
@@ -77,7 +120,7 @@ private fun MainPage(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = "Model file path: ${modelFile.absolutePath}",
+                    text = "Model: ${modelFile.name}",
                     style = MaterialTheme.typography.labelSmall,
                 )
                 Spacer(modifier = Modifier.height(16.dp))
@@ -98,10 +141,33 @@ private fun MainPage(
                     style = MaterialTheme.typography.labelSmall,
                 )
 
+                Box(
+                    modifier = Modifier
+                        .padding(top = 16.dp, end = 16.dp)
+                        .weight(1F),
+                ) {
+                    Text(
+                        text = chatLog,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+
                 Button(
                     onClick = onLoadModel,
                 ) {
                     Text("Load Model")
+                }
+
+                Button(
+                    onClick = { onSendPrompt("Hello, Who are you") },
+                ) {
+                    Text("Send Prompt")
+                }
+
+                Button(
+                    onClick = onReleaseModel,
+                ) {
+                    Text("Release Model")
                 }
             }
         }

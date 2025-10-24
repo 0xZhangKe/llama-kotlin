@@ -211,6 +211,23 @@ Java_com_zhangke_llama_Llama_nativeTokenize(JNIEnv *env, jclass, jstring jtext) 
     return result;
 }
 
+static jstring newStringFromUtf8Bytes(JNIEnv* env, const char* bytes, int len) {
+    jclass strCls = env->FindClass("java/lang/String");
+    jclass csCls  = env->FindClass("java/nio/charset/StandardCharsets");
+    jfieldID fUTF8 = env->GetStaticFieldID(csCls, "UTF_8", "Ljava/nio/charset/Charset;");
+    jobject utf8   = env->GetStaticObjectField(csCls, fUTF8);
+
+    jbyteArray arr = env->NewByteArray(len);
+    env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte*>(bytes));
+    jmethodID ctor = env->GetMethodID(strCls, "<init>", "([BLjava/nio/charset/Charset;)V");
+    jstring s = (jstring) env->NewObject(strCls, ctor, arr, utf8);
+
+    env->DeleteLocalRef(arr);
+    env->DeleteLocalRef(csCls);
+    env->DeleteLocalRef(strCls);
+    return s;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_zhangke_llama_Llama_nativeDetokenize(
         JNIEnv *env, jclass, jintArray jtokens) {
@@ -219,7 +236,8 @@ Java_com_zhangke_llama_Llama_nativeDetokenize(
     std::vector<llama_token> toks(n);
     env->GetIntArrayRegion(jtokens, 0, n, reinterpret_cast<jint *>(toks.data()));
     std::string text = detok(g_model, toks);
-    return env->NewStringUTF(text.c_str());
+    jstring jText = newStringFromUtf8Bytes(env, text.c_str(), (int)strlen(text.c_str()));
+    return jText;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -297,7 +315,7 @@ Java_com_zhangke_llama_Llama_nativeGenerate(
         if (llama_decode(ctx, batch) != 0) break;
     }
     llama_batch_free(batch);
-    return env->NewStringUTF(out.c_str());
+    return newStringFromUtf8Bytes(env, out.c_str(), (int)strlen(out.c_str()));
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -368,7 +386,7 @@ Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
         char piece[512];
         llama_token_to_piece(vocab, (llama_token)next_id, piece, (int)sizeof(piece),
                 /*lstrip=*/0, /*special=*/false);
-        jstring jpiece = env->NewStringUTF(piece);
+        jstring jpiece = newStringFromUtf8Bytes(env, piece, (int)strlen(piece));
         env->CallVoidMethod(jcallback, midOnDelta, jpiece);
         env->DeleteLocalRef(jpiece);
 
@@ -386,3 +404,4 @@ Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
     llama_batch_free(batch);
     env->CallVoidMethod(jcallback, midOnDone);
 }
+
