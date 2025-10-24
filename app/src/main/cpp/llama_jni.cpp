@@ -231,13 +231,41 @@ static jstring newStringFromUtf8Bytes(JNIEnv* env, const char* bytes, int len) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_zhangke_llama_Llama_nativeDetokenize(
         JNIEnv *env, jclass, jintArray jtokens) {
-    if (!ensure_model(env)) return nullptr;
-    jsize n = env->GetArrayLength(jtokens);
+    if (!ensure_model(env) || !jtokens) return nullptr;
+
+    const jsize n = env->GetArrayLength(jtokens);
+    if (n <= 0) return env->NewStringUTF("");
+
+    std::vector<jint> tmp(n);
+    env->GetIntArrayRegion(jtokens, 0, n, tmp.data());
+
     std::vector<llama_token> toks(n);
-    env->GetIntArrayRegion(jtokens, 0, n, reinterpret_cast<jint *>(toks.data()));
-    std::string text = detok(g_model, toks);
-    jstring jText = newStringFromUtf8Bytes(env, text.c_str(), (int)strlen(text.c_str()));
-    return jText;
+    for (jsize i = 0; i < n; ++i) toks[i] = (llama_token) tmp[i];
+
+    const llama_vocab* vocab = llama_model_get_vocab(g_model);
+
+    int need = llama_detokenize(
+            vocab,
+            toks.data(), (int)toks.size(),
+            /*text=*/nullptr, /*text_len_max=*/0,
+            /*remove_special=*/false,
+            /*unparse_special=*/false
+    );
+    if (need <= 0) return env->NewStringUTF("");
+
+    std::string text;
+    text.resize(need);
+    int wrote = llama_detokenize(
+            vocab,
+            toks.data(), (int)toks.size(),
+            text.data(), (int)text.size(),
+            /*remove_special=*/false,
+            /*unparse_special=*/false
+    );
+    if (wrote < 0) return env->NewStringUTF("");
+    if (wrote < need) text.resize((size_t)wrote);
+
+    return newStringFromUtf8Bytes(env, text.data(), (int)text.size());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -250,99 +278,14 @@ Java_com_zhangke_llama_Llama_nativeGenerate(
 
     if (!ensure_ctx(env)) return env->NewStringUTF("");
 
-    llama_context *ctx = g_ctx;
+    llama_context *ctx       = g_ctx;
     const llama_model *model = g_model;
     const llama_vocab *vocab = llama_model_get_vocab(model);
-
-    const int eos_id = llama_token_eos(vocab);
-    const int n_vocab = llama_vocab_n_tokens(vocab);
-
-    const char *cprompt = env->GetStringUTFChars(jprompt, nullptr);
-    std::vector<llama_token> prompt_tokens(1024);
-    int nt = llama_tokenize(
-            vocab,
-            cprompt, (int) strlen(cprompt),
-            prompt_tokens.data(), (int) prompt_tokens.size(),
-            /*add_special=*/true, /*parse_special=*/false
-    );
-    env->ReleaseStringUTFChars(jprompt, cprompt);
-    if (nt <= 0) return env->NewStringUTF("");
-
-    llama_batch batch = llama_batch_init(nt + maxTokens, 0, 1);
-
-    llama_pos pos = 0;
-    for (int i = 0; i < nt; ++i) {
-        batch.token[i] = prompt_tokens[i];
-        batch.pos[i] = pos++;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = (i == nt - 1) ? 1 : 0;
-    }
-    batch.n_tokens = nt;
-
-    if (llama_decode(ctx, batch) != 0) {
-        llama_batch_free(batch);
-        return env->NewStringUTF("");
-    }
-
-    std::string out;
-    out.reserve(1024);
-
-    for (int t = 0; t < (int) maxTokens; ++t) {
-        const float *logits = nullptr;
-        logits = llama_get_logits(ctx);
-        if (!logits) break;
-
-        int next_id = int(std::max_element(logits, logits + n_vocab) - logits);
-        if (next_id == eos_id) break;
-
-        // detokenize 追加输出
-        char piece[256];
-        llama_token_to_piece(vocab, (llama_token) next_id, piece, (int) sizeof(piece), /*lstrip=*/
-                             0, /*special=*/false);
-        out += piece;
-
-        llama_batch_free(batch);
-        batch = llama_batch_init(1, 0, 1);
-
-        batch.token[0] = (llama_token) next_id;
-        batch.pos[0] = pos++;
-        batch.n_seq_id[0] = 1;
-        batch.seq_id[0][0] = 0;
-        batch.logits[0] = 1;
-        batch.n_tokens = 1;
-
-        if (llama_decode(ctx, batch) != 0) break;
-    }
-    llama_batch_free(batch);
-    return newStringFromUtf8Bytes(env, out.c_str(), (int)strlen(out.c_str()));
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
-        JNIEnv* env, jclass,
-        jstring jprompt,
-        jint maxTokens, jfloat /*temperature*/, jfloat /*topP*/, jint /*topK*/,
-        jfloat /*repeatPenalty*/, jfloat /*freqPenalty*/, jfloat /*presPenalty*/,
-        jobjectArray /*jstops*/,
-        jobject jcallback) {
-
-    if (!ensure_ctx(env)) return;
-    if (jcallback == nullptr) return;
-
-    jclass cbCls = env->GetObjectClass(jcallback);
-    jmethodID midOnDelta = env->GetMethodID(cbCls, "onDelta", "(Ljava/lang/String;)V");
-    jmethodID midOnDone  = env->GetMethodID(cbCls, "onDone",  "()V");
-    if (!midOnDelta || !midOnDone) return;
-
-    llama_context* ctx   = g_ctx;
-    const llama_model* model = g_model;
-    const llama_vocab* vocab = llama_model_get_vocab(model);
 
     const int eos_id  = llama_vocab_eos(vocab);
     const int n_vocab = llama_vocab_n_tokens(vocab);
 
-    const char* cprompt = env->GetStringUTFChars(jprompt, nullptr);
+    const char *cprompt = env->GetStringUTFChars(jprompt, nullptr);
     std::vector<llama_token> prompt_tokens(1024);
     int nt = llama_tokenize(
             vocab,
@@ -351,16 +294,21 @@ Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
             /*add_special=*/true, /*parse_special=*/false
     );
     env->ReleaseStringUTFChars(jprompt, cprompt);
-    if (nt <= 0) {
-        env->CallVoidMethod(jcallback, midOnDone);
-        return;
+    if (nt <= 0) return env->NewStringUTF("");
+
+    if (nt > (int)prompt_tokens.size()) {
+        prompt_tokens.resize(nt);
+        nt = llama_tokenize(
+                vocab,
+                cprompt, 0, // 注意：因上面已释放 cprompt，此处通常不再重试；若要重试，需延后 Release
+                prompt_tokens.data(), nt,
+                true, false
+        );
+        if (nt <= 0) return env->NewStringUTF("");
     }
 
     llama_pos pos = 0;
-    llama_batch batch = llama_batch_init(/*n_tokens_max=*/nt + std::max(1, (int)maxTokens),
-            /*embd=*/0,
-            /*n_seq_max=*/1);
-
+    llama_batch batch = llama_batch_init(nt + std::max(1, (int)maxTokens), 0, 1);
     for (int i = 0; i < nt; ++i) {
         batch.token[i]     = prompt_tokens[i];
         batch.pos[i]       = pos++;
@@ -372,25 +320,32 @@ Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
 
     if (llama_decode(ctx, batch) != 0) {
         llama_batch_free(batch);
-        env->CallVoidMethod(jcallback, midOnDone);
-        return;
+        return env->NewStringUTF("");
     }
 
+    int prompt_bytes_need = llama_detokenize(
+            vocab,
+            prompt_tokens.data(), nt,
+            /*text=*/nullptr, /*text_len_max=*/0,
+            /*remove_special=*/false, /*unparse_special=*/false
+    );
+    if (prompt_bytes_need < 0) prompt_bytes_need = 0;
+
+    std::vector<llama_token> all_tokens;
+    all_tokens.reserve(nt + std::max(1, (int)maxTokens));
+    all_tokens.insert(all_tokens.end(), prompt_tokens.begin(), prompt_tokens.begin() + nt);
+
     for (int t = 0; t < (int)maxTokens; ++t) {
-        const float* logits = llama_get_logits(ctx);
+        const float *logits = llama_get_logits(ctx);
         if (!logits) break;
 
         int next_id = int(std::max_element(logits, logits + n_vocab) - logits);
         if (next_id == eos_id) break;
 
-        char piece[512];
-        llama_token_to_piece(vocab, (llama_token)next_id, piece, (int)sizeof(piece),
-                /*lstrip=*/0, /*special=*/false);
-        jstring jpiece = newStringFromUtf8Bytes(env, piece, (int)strlen(piece));
-        env->CallVoidMethod(jcallback, midOnDelta, jpiece);
-        env->DeleteLocalRef(jpiece);
+        all_tokens.push_back((llama_token)next_id);
 
-        batch.n_tokens     = 0;
+        llama_batch_free(batch);
+        batch = llama_batch_init(1, 0, 1);
         batch.token[0]     = (llama_token)next_id;
         batch.pos[0]       = pos++;
         batch.n_seq_id[0]  = 1;
@@ -402,6 +357,145 @@ Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
     }
 
     llama_batch_free(batch);
-    env->CallVoidMethod(jcallback, midOnDone);
+
+    int total_need = llama_detokenize(
+            vocab,
+            all_tokens.data(), (int)all_tokens.size(),
+            /*text=*/nullptr, /*text_len_max=*/0,
+            /*remove_special=*/false, /*unparse_special=*/false
+    );
+    if (total_need <= 0) return env->NewStringUTF("");
+
+    std::string full;
+    full.resize(total_need);
+    int wrote = llama_detokenize(
+            vocab,
+            all_tokens.data(), (int)all_tokens.size(),
+            full.data(), (int)full.size(),
+            /*remove_special=*/false, /*unparse_special=*/false
+    );
+    if (wrote < 0) return env->NewStringUTF("");
+    if (wrote < total_need) full.resize(wrote);
+
+    int gen_bytes = (int)full.size() - prompt_bytes_need;
+    if (gen_bytes <= 0) return env->NewStringUTF("");
+
+    const char* gen_ptr = full.data() + prompt_bytes_need;
+    return newStringFromUtf8Bytes(env, gen_ptr, gen_bytes);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_zhangke_llama_Llama_nativeGenerateStreaming(
+        JNIEnv* env, jclass,
+        jstring jprompt,
+        jint maxTokens, jfloat /*temperature*/, jfloat /*topP*/, jint /*topK*/,
+        jfloat /*repeatPenalty*/, jfloat /*freqPenalty*/, jfloat /*presPenalty*/,
+        jobjectArray /*jstops*/,
+        jobject jcallback) {
+
+    if (!ensure_ctx(env) || !jcallback) return;
+
+    jobject gcb = env->NewGlobalRef(jcallback);
+    jclass  cbCls = env->GetObjectClass(gcb);
+    jmethodID midOnDelta = env->GetMethodID(cbCls, "onDelta", "(Ljava/lang/String;)V");
+    jmethodID midOnDone  = env->GetMethodID(cbCls, "onDone",  "()V");
+    if (!midOnDelta || !midOnDone) { env->DeleteGlobalRef(gcb); return; }
+
+    llama_context* ctx        = g_ctx;
+    const llama_model* model  = g_model;
+    const llama_vocab* vocab  = llama_model_get_vocab(model);
+    const int eos_id          = llama_vocab_eos(vocab);
+    const int n_vocab         = llama_vocab_n_tokens(vocab);
+
+    const char* cprompt = env->GetStringUTFChars(jprompt, nullptr);
+    std::vector<llama_token> prompt_tokens(1024);
+    int nt = llama_tokenize(
+            vocab, cprompt, (int)strlen(cprompt),
+            prompt_tokens.data(), (int)prompt_tokens.size(),
+            /*add_special=*/true, /*parse_special=*/false
+    );
+    env->ReleaseStringUTFChars(jprompt, cprompt);
+    if (nt <= 0) { env->CallVoidMethod(gcb, midOnDone); env->DeleteGlobalRef(gcb); return; }
+
+    llama_pos pos = 0;
+    llama_batch batch = llama_batch_init(nt + std::max(1, (int)maxTokens), 0, 1);
+    for (int i = 0; i < nt; ++i) {
+        batch.token[i]     = prompt_tokens[i];
+        batch.pos[i]       = pos++;
+        batch.n_seq_id[i]  = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i]    = (i == nt - 1) ? 1 : 0;
+    }
+    batch.n_tokens = nt;
+    if (llama_decode(ctx, batch) != 0) {
+        llama_batch_free(batch);
+        env->CallVoidMethod(gcb, midOnDone);
+        env->DeleteGlobalRef(gcb);
+        return;
+    }
+
+    int prompt_bytes = llama_detokenize(
+            vocab, prompt_tokens.data(), nt,
+            /*text=*/nullptr, /*text_len_max=*/0,
+            /*remove_special=*/false, /*unparse_special=*/false
+    );
+    if (prompt_bytes < 0) prompt_bytes = 0;
+
+    std::vector<llama_token> all;
+    all.reserve(nt + std::max(1, (int)maxTokens));
+    all.insert(all.end(), prompt_tokens.begin(), prompt_tokens.begin() + nt);
+    int prev_bytes_len = prompt_bytes;
+
+    for (int t = 0; t < (int)maxTokens; ++t) {
+        const float* logits = llama_get_logits(ctx);
+        if (!logits) break;
+
+        int next_id = (int)(std::max_element(logits, logits + n_vocab) - logits);
+        if (next_id == eos_id) break;
+
+        all.push_back((llama_token) next_id);
+
+        int need = llama_detokenize(
+                vocab, all.data(), (int)all.size(),
+                nullptr, 0, /*remove_special=*/false, /*unparse_special=*/false
+        );
+        if (need <= 0) break;
+
+        std::string full;
+        full.resize(need);
+        int wrote = llama_detokenize(
+                vocab, all.data(), (int)all.size(),
+                full.data(), (int)full.size(),
+                /*remove_special=*/false, /*unparse_special=*/false
+        );
+        if (wrote < 0) break;
+        if (wrote < need) full.resize(wrote);
+
+        int delta = (int)full.size() - prev_bytes_len;
+        if (delta > 0) {
+            const char* ptr = full.data() + prev_bytes_len;
+            jstring jpiece = newStringFromUtf8Bytes(env, ptr, delta); // 你的 UTF-8 安全构造函数
+            env->CallVoidMethod(gcb, midOnDelta, jpiece);
+            env->DeleteLocalRef(jpiece);
+            if (env->ExceptionCheck()) break;
+
+            prev_bytes_len = (int)full.size();
+        }
+
+        llama_batch_free(batch);
+        batch = llama_batch_init(1, 0, 1);
+        batch.token[0]     = (llama_token) next_id;
+        batch.pos[0]       = pos++;
+        batch.n_seq_id[0]  = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0]    = 1;
+        batch.n_tokens     = 1;
+
+        if (llama_decode(ctx, batch) != 0) break;
+    }
+
+    llama_batch_free(batch);
+    env->CallVoidMethod(gcb, midOnDone);
+    env->DeleteGlobalRef(gcb);
 }
 
