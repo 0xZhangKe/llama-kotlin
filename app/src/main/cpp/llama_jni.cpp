@@ -49,15 +49,31 @@ static bool ends_with(const std::string &s, const std::string &suf) {
     return s.size() >= suf.size() && std::equal(suf.rbegin(), suf.rend(), s.rbegin());
 }
 
-// 单 token -> 文本
-static std::string token_to_piece(llama_model *model, llama_token tok) {
-    int need = llama_detokenize(model, &tok, 1, nullptr, 0, true);
-    if (need <= 0) return "";
+static std::string token_to_piece(const llama_model* model, llama_token tok) {
+    const llama_vocab* vocab = llama_model_get_vocab(model);
+
+    const int need = llama_detokenize(
+            vocab,
+            &tok, 1,
+            /*text=*/nullptr, /*text_len_max=*/0,
+            /*remove_special=*/false,
+            /*unparse_special=*/false
+    );
+    if (need <= 0) return {};
+
     std::string out;
     out.resize(need);
-    int wrote = llama_token_to_piece(model, tok, out.data(), (int) out.size(), /*special=*/true);
-    if (wrote < 0) return "";
-    if (wrote < need) out.resize(wrote);
+
+    const int wrote = llama_token_to_piece(
+            vocab,
+            tok,
+            out.data(),
+            (int)out.size(),
+            /*lstrip=*/0,
+            /*special=*/true
+    );
+    if (wrote < 0) return {};
+    if (wrote < (int)out.size()) out.resize(wrote);
     return out;
 }
 
@@ -69,12 +85,10 @@ static std::string detok(llama_model *model, const std::vector<llama_token> &tok
     return s;
 }
 
-// ================== JNI 生命周期 ==================
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
     JNIEnv *env = nullptr;
     if (vm->GetEnv((void **) &env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
 
-    // 缓存回调方法（存在则支持流式）
     jclass cb = env->FindClass("com/zhangke/llama/Llama$TokenCallback");
     if (cb) {
         g_CallbackCls = (jclass) env->NewGlobalRef(cb);
@@ -160,7 +174,7 @@ Java_com_zhangke_llama_Llama_nativeFreeModel(JNIEnv *, jclass) {
         g_ctx = nullptr;
     }
     if (g_model) {
-        llama_free_model(g_model);
+        llama_model_free(g_model);
         g_model = nullptr;
     }
     g_cancel.store(false);

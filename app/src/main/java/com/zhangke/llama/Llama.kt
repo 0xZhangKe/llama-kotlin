@@ -33,12 +33,21 @@ object Llama {
         fun onDone()
     }
 
+    interface TokenCallback {
+        fun onToken(token: String, tokenId: Int) {}
+
+        fun shouldStop(): Boolean = false
+    }
+
     // ---- Kotlin API ----
     fun load(modelPath: String, params: InitParams = InitParams()) {
         nativeLoadModel(
             modelPath,
-            params.nCtx, params.nGpuLayers, params.nThreads,
-            params.seed, params.useMMap, params.useMLock
+            params.nCtx,
+            params.nGpuLayers,
+            params.nThreads,
+            params.useMMap,
+            params.useMLock,
         )
     }
 
@@ -81,27 +90,49 @@ object Llama {
      * @param useMMap 是否使用内存映射（memory-mapped file）加载模型 true 可以显著减少启动时内存占用（因为不需要完整读入文件），但文件必须位于支持 mmap 的文件系统上。
      * @param useMLock 是否锁定模型到物理内存（防止被换出）一般在服务器或桌面上启用。手机上建议关掉。
      */
-    @Keep @JvmStatic external fun nativeLoadModel(
+    @Keep
+    @JvmStatic
+    external fun nativeLoadModel(
         modelPath: String,
-        nCtx: Int, nGpuLayers: Int, nThreads: Int,
-        useMMap: Boolean, useMLock: Boolean
+        nCtx: Int,
+        nGpuLayers: Int,
+        nThreads: Int,
+        useMMap: Boolean,
+        useMLock: Boolean,
     )
 
-    @Keep @JvmStatic external fun nativeFreeModel()
+    @Keep
+    @JvmStatic
+    external fun nativeFreeModel()
 
-    @Keep @JvmStatic external fun nativeReset()
-    @Keep @JvmStatic external fun nativeVocabSize(): Int
-    @Keep @JvmStatic external fun nativeTokenize(text: String, addBos: Boolean): IntArray
-    @Keep @JvmStatic external fun nativeDetokenize(tokens: IntArray): String
+    @Keep
+    @JvmStatic
+    external fun nativeReset()
 
-    @Keep @JvmStatic external fun nativeGenerate(
+    @Keep
+    @JvmStatic
+    external fun nativeVocabSize(): Int
+
+    @Keep
+    @JvmStatic
+    external fun nativeTokenize(text: String, addBos: Boolean): IntArray
+
+    @Keep
+    @JvmStatic
+    external fun nativeDetokenize(tokens: IntArray): String
+
+    @Keep
+    @JvmStatic
+    external fun nativeGenerate(
         prompt: String,
         maxTokens: Int, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, frequencyPenalty: Float, presencePenalty: Float,
         stop: Array<String>
     ): String
 
-    @Keep @JvmStatic external fun nativeGenerateStreaming(
+    @Keep
+    @JvmStatic
+    external fun nativeGenerateStreaming(
         prompt: String,
         maxTokens: Int, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, frequencyPenalty: Float, presencePenalty: Float,
